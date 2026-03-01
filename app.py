@@ -293,6 +293,50 @@ def get_video_info():
         return jsonify({'error': f'Failed to fetch video info: {str(e)}'}), 500
 
 
+@app.route('/api/debug')
+def debug_info():
+    """Diagnostic endpoint — check Node.js, pytubefix, and client status."""
+    import subprocess
+    results = {}
+
+    # Check Node.js from nodejs-wheel-binaries
+    try:
+        from pytubefix.botGuard.bot_guard import NODE_PATH, VM_PATH
+        results['node_path'] = NODE_PATH
+        results['node_exists'] = os.path.exists(NODE_PATH)
+        results['vm_path'] = VM_PATH
+        results['vm_exists'] = os.path.exists(VM_PATH)
+        try:
+            out = subprocess.check_output([NODE_PATH, '--version'], stderr=subprocess.PIPE, timeout=5)
+            results['node_version'] = out.decode().strip()
+        except Exception as e:
+            results['node_error'] = str(e)
+    except Exception as e:
+        results['node_import_error'] = str(e)
+
+    # Test PO token generation
+    try:
+        from pytubefix.botGuard.bot_guard import generate_po_token
+        pot = generate_po_token('dQw4w9WgXcQ')
+        results['po_token'] = pot[:40] + '...' if pot else None
+    except Exception as e:
+        results['po_token_error'] = str(e)
+
+    # Test each client
+    from pytubefix import YouTube
+    test_url = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+    for client in _YT_CLIENTS:
+        try:
+            yt = YouTube(test_url, client=client)
+            title = yt.title
+            n_streams = len(yt.streams)
+            results[f'client_{client}'] = f'OK: {n_streams} streams'
+        except Exception as e:
+            results[f'client_{client}'] = f'FAIL: {str(e)[:100]}'
+
+    return jsonify(results)
+
+
 @app.route('/api/download', methods=['POST'])
 def download_video():
     """Stream YouTube video from CDN through server, or download Instagram via yt-dlp."""
