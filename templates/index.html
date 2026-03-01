@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Downloader — YouTube & Instagram</title>
+    <link rel="stylesheet" href="/static/css/style.css?v=2">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Animated background blobs -->
+    <div class="bg-blobs">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+        <div class="blob blob-3"></div>
+    </div>
+
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <div class="logo-icon">
+                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z" fill="currentColor"/>
+                    </svg>
+                </div>
+                <h1>Video <span class="gradient-text">Downloader</span></h1>
+            </div>
+            <p class="tagline">Paste a YouTube or Instagram link. Pick your quality. Download instantly.</p>
+        </header>
+
+        <!-- Search Section -->
+        <div class="search-section">
+            <div class="input-wrapper">
+                <div class="input-icon">
+                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M13.483 0a1.374 1.374 0 0 0-.961.438L7.116 6.226l-3.854 2.668a.916.916 0 0 0-.296.398.896.896 0 0 0 .002.497l1.613 4.18a.916.916 0 0 0 .604.558l4.38 1.228 4.375 1.229a.916.916 0 0 0 .496-.003.916.916 0 0 0 .398-.296l2.668-3.854 5.788-5.406A1.374 1.374 0 0 0 24 5.5V1.374A1.374 1.374 0 0 0 22.626 0H13.483z" fill="currentColor" opacity="0.3"/>
+                        <path d="M3.5 21.5l5-5M10 18l-6.5 6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                </div>
+                <input 
+                    type="text" 
+                    id="urlInput" 
+                    placeholder="Paste YouTube or Instagram video link here..." 
+                    autocomplete="off"
+                    spellcheck="false"
+                >
+                <button id="fetchBtn" onclick="fetchVideoInfo()">
+                    <span class="btn-text">Fetch</span>
+                    <span class="btn-loader" style="display:none;">
+                        <div class="spinner"></div>
+                    </span>
+                </button>
+            </div>
+            <div id="errorMsg" class="error-message" style="display:none;"></div>
+        </div>
+
+        <!-- Video Info Card -->
+        <div id="videoCard" class="video-card" style="display:none;">
+            <div class="video-card-inner">
+                <div class="thumbnail-wrapper">
+                    <img id="thumbnail" src="" alt="Video Thumbnail">
+                    <div class="duration-badge" id="duration"></div>
+                    <div class="platform-badge" id="platformBadge" style="display:none;"></div>
+                </div>
+                <div class="video-details">
+                    <h2 id="videoTitle" class="video-title"></h2>
+                    <div class="video-meta">
+                        <span class="meta-item">
+                            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+                                <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                            </svg>
+                            <span id="channel"></span>
+                        </span>
+                        <span class="meta-item">
+                            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+                                <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+                            </svg>
+                            <span id="views"></span>
+                        </span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Quality Selection -->
+            <div class="quality-section">
+                <h3 class="section-title">Choose Quality</h3>
+                <div id="qualityGrid" class="quality-grid"></div>
+            </div>
+
+            <!-- Download Button -->
+            <button id="downloadBtn" class="download-btn" disabled>
+                <span class="btn-icon btn-icon-download">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="22" height="22">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                </span>
+                <span class="btn-icon btn-icon-success" style="display:none;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="22" height="22">
+                        <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                </span>
+                <span id="downloadBtnText">Select a quality to download</span>
+            </button>
+
+            <!-- Download Progress -->
+            <div id="progressSection" class="progress-section" style="display:none;">
+                <div class="progress-header">
+                    <span class="progress-phase" id="progressPhase">Preparing...</span>
+                    <span class="progress-percent" id="progressPercent">0%</span>
+                </div>
+                <div class="progress-bar-wrapper">
+                    <div class="progress-bar" id="progressBar"></div>
+                </div>
+                <div class="progress-details" id="progressDetails"></div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p></p>
+        </footer>
+    </div>
+
+    <script src="/static/js/app.js?v=2"></script>
+</body>
+</html>
