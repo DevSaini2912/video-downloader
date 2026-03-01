@@ -70,8 +70,9 @@ def _http_get_json(url, timeout=10):
 #  YouTube — via pytubefix (works from datacenter IPs)
 # =====================================================================
 
-# Clients that don't require PO tokens or JS player parsing
-_YT_CLIENTS = ['IOS', 'ANDROID_VR', 'WEB_CREATOR']
+# Clients to try — IOS gives direct URLs for all formats;
+# WEB uses PO token (auto-generated via Node.js) and works from datacenter IPs
+_YT_CLIENTS = ['IOS', 'WEB', 'ANDROID_VR']
 
 
 def _make_yt(url):
@@ -81,8 +82,9 @@ def _make_yt(url):
     for client in _YT_CLIENTS:
         try:
             yt = YouTube(url, client=client)
-            # Force metadata fetch to catch errors early
+            # Force metadata + stream fetch to catch errors early
             _ = yt.title
+            _ = yt.streams
             return yt
         except Exception as e:
             last_err = e
@@ -313,7 +315,13 @@ def download_video():
 
 
 def _download_youtube(url, format_id):
-    """Proxy YouTube CDN stream to user's browser."""
+    """Download YouTube video and stream to user's browser.
+    
+    For non-SABR streams: proxy the direct CDN URL.
+    For SABR streams: use pytubefix's SABR downloader to a temp file, then send.
+    """
+    import uuid
+
     # Parse format_id to get itag and stream type
     # format_id is like 'prog_22', 'adapt_137', 'audio_140'
     parts = format_id.split('_', 1)
@@ -328,39 +336,59 @@ def _download_youtube(url, format_id):
         return jsonify({'error': 'Stream not available'}), 404
 
     title = re.sub(r'[^\w\s\-]', '', yt.title)[:80].strip()
-    cdn_url = stream.url
     filesize = stream.filesize
     mime = stream.mime_type or 'video/mp4'
 
     if stream_type == 'audio':
-        ext = 'mp4'  # Raw audio from YouTube is m4a/webm, send as-is
         fname = f'{title}.m4a'
         mime = stream.mime_type or 'audio/mp4'
     else:
-        ext = 'mp4'
         fname = f'{title}.mp4'
 
-    # Proxy the CDN URL: fetch from YouTube CDN and stream to user
-    def generate():
-        req = urllib.request.Request(cdn_url, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        })
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            while True:
-                chunk = resp.read(65536)  # 64KB chunks
-                if not chunk:
-                    break
-                yield chunk
+    if not stream.is_sabr:
+        # Direct CDN URL — proxy it to the user
+        cdn_url = stream.url
 
-    headers = {
-        'Content-Type': mime,
-        'Content-Disposition': f'attachment; filename="{fname}"',
-        'Cache-Control': 'no-cache',
-    }
-    if filesize:
-        headers['Content-Length'] = str(filesize)
+        def generate():
+            req = urllib.request.Request(cdn_url, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            })
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                while True:
+                    chunk = resp.read(65536)  # 64KB chunks
+                    if not chunk:
+                        break
+                    yield chunk
 
-    return Response(generate(), headers=headers)
+        headers = {
+            'Content-Type': mime,
+            'Content-Disposition': f'attachment; filename="{fname}"',
+            'Cache-Control': 'no-cache',
+        }
+        if filesize:
+            headers['Content-Length'] = str(filesize)
+
+        return Response(generate(), headers=headers)
+    else:
+        # SABR stream — download to temp file via pytubefix, then send
+        tmp_name = f'dl_{uuid.uuid4().hex[:10]}.mp4'
+        tmp_path = os.path.join(DOWNLOAD_DIR, tmp_name)
+        stream.download(output_path=DOWNLOAD_DIR, filename=tmp_name)
+
+        if not os.path.exists(tmp_path):
+            return jsonify({'error': 'SABR download failed — file not created'}), 500
+
+        from flask import send_file
+        response = send_file(tmp_path, as_attachment=True, download_name=fname, mimetype=mime)
+
+        @response.call_on_close
+        def cleanup():
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+        return response
 
 
 def _download_instagram(url, quality, format_id):
