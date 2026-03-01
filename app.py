@@ -322,19 +322,27 @@ def debug_info():
     except Exception as e:
         results['po_token_error'] = str(e)
 
-    # Test multiple clients with a non-Rick-Astley video
-    from pytubefix import YouTube
-    test_url = 'https://www.youtube.com/watch?v=kJQP7kiw5Fk'  # Despacito
-    clients_to_test = ['WEB', 'WEB_EMBED', 'WEB_CREATOR', 'WEB_SAFARI',
-                       'TV_EMBED', 'MEDIA_CONNECT', 'IOS', 'ANDROID', 'ANDROID_VR']
-    for client in clients_to_test:
-        try:
-            yt = YouTube(test_url, client=client)
-            title = yt.title
-            n_streams = len(yt.streams)
-            results[f'c_{client}'] = f'OK: {n_streams}s'
-        except Exception as e:
-            results[f'c_{client}'] = f'FAIL: {str(e)[:60]}'
+    # Test raw watch page scraping from Vercel's IP
+    try:
+        watch_req = urllib.request.Request(
+            'https://www.youtube.com/watch?v=kJQP7kiw5Fk',
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'}
+        )
+        with urllib.request.urlopen(watch_req, timeout=15) as resp:
+            html = resp.read().decode('utf-8', errors='replace')
+            results['watch_page_len'] = len(html)
+            results['has_playerResponse'] = 'ytInitialPlayerResponse' in html
+            results['has_streamingData'] = 'streamingData' in html
+            results['has_formats'] = '"formats"' in html
+            results['has_adaptiveFormats'] = '"adaptiveFormats"' in html
+            # Check for bot detection on the page
+            results['has_bot_check'] = 'are not a robot' in html.lower() or 'confirm you' in html.lower()
+            # Extract playability status
+            import re as re2
+            m = re2.search(r'"playabilityStatus":\{"status":"(\w+)"', html)
+            results['playability'] = m.group(1) if m else 'not found'
+    except Exception as e:
+        results['watch_page_error'] = str(e)[:100]
 
     return jsonify(results)
 
