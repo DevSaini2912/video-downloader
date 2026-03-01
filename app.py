@@ -162,52 +162,111 @@ def get_youtube_info_ytdlp(url):
     }
 
 
+def _scrape_youtube_page(video_id):
+    """Fetch YouTube watch page HTML and extract ytInitialPlayerResponse.
+    Works from datacenter IPs — YouTube serves the page, it only blocks streams."""
+    watch_url = f'https://www.youtube.com/watch?v={video_id}'
+    req = urllib.request.Request(watch_url, headers={
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                      '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept': 'text/html,application/xhtml+xml',
+    })
+    with urllib.request.urlopen(req, timeout=15) as r:
+        html = r.read().decode('utf-8', errors='replace')
+
+    # Extract ytInitialPlayerResponse JSON
+    m = re.search(r'var\s+ytInitialPlayerResponse\s*=\s*(\{.+?\});', html)
+    if not m:
+        m = re.search(r'ytInitialPlayerResponse\s*=\s*(\{.+?\});', html)
+    if not m:
+        return None
+    return json.loads(m.group(1))
+
+
 def get_youtube_info_fallback(video_id, url):
-    """Fallback: oEmbed for metadata + RYD for view/like counts + estimated sizes."""
+    """Scrape YouTube watch page for full metadata + real file sizes.
+    Falls back to oEmbed + RYD if scraping fails."""
     title = 'Unknown'
     channel = 'Unknown'
     thumbnail = f'https://i.ytimg.com/vi/{video_id}/hqdefault.jpg'
     duration = 0
     view_count = 0
     like_count = 0
+    real_sizes = {}   # height → filesize in bytes (video track only)
+    best_audio_size = 0
 
-    # oEmbed — title, author, thumbnail
+    # ── Strategy A: Scrape YouTube watch page (best data) ──
     try:
-        oembed = _http_get_json(
-            f'https://www.youtube.com/oembed?url=https://youtube.com/watch?v={video_id}&format=json'
-        )
-        title = oembed.get('title', title)
-        channel = oembed.get('author_name', channel)
-        # oEmbed thumbnail is usually low quality, use ytimg instead
+        player = _scrape_youtube_page(video_id)
+        if player:
+            vd = player.get('videoDetails', {})
+            title = vd.get('title', title)
+            channel = vd.get('author', channel)
+            duration = int(vd.get('lengthSeconds', 0) or 0)
+            view_count = int(vd.get('viewCount', 0) or 0)
+
+            thumbs = vd.get('thumbnail', {}).get('thumbnails', [])
+            if thumbs:
+                thumbnail = thumbs[-1].get('url', thumbnail)
+
+            # Extract real file sizes from adaptiveFormats
+            for af in player.get('streamingData', {}).get('adaptiveFormats', []):
+                cl = af.get('contentLength')
+                if not cl:
+                    continue
+                cl = int(cl)
+                mime = af.get('mimeType', '')
+                ql = af.get('qualityLabel', '')
+
+                if 'video' in mime:
+                    h = af.get('height', 0)
+                    if h and (h not in real_sizes or cl > real_sizes[h]):
+                        real_sizes[h] = cl
+                elif 'audio' in mime:
+                    if cl > best_audio_size:
+                        best_audio_size = cl
     except Exception:
         pass
 
-    # Return YouTube Dislike API — views + likes
+    # ── Strategy B: oEmbed for title/channel (if scraping failed) ──
+    if title == 'Unknown':
+        try:
+            oembed = _http_get_json(
+                f'https://www.youtube.com/oembed?url=https://youtube.com/watch?v={video_id}&format=json'
+            )
+            title = oembed.get('title', title)
+            channel = oembed.get('author_name', channel)
+        except Exception:
+            pass
+
+    # ── Strategy C: RYD API for views + likes (supplement or fallback) ──
     try:
         ryd = _http_get_json(
             f'https://returnyoutubedislikeapi.com/votes?videoId={video_id}'
         )
-        view_count = ryd.get('viewCount', 0) or 0
+        if not view_count:
+            view_count = ryd.get('viewCount', 0) or 0
         like_count = ryd.get('likes', 0) or 0
     except Exception:
         pass
 
-    # Try to get duration from noembed
-    try:
-        noembed = _http_get_json(f'https://noembed.com/embed?url=https://youtube.com/watch?v={video_id}')
-        # noembed doesn't give duration, but worth trying
-    except Exception:
-        pass
-
-    # Build format list with estimated sizes
+    # Build format list with real sizes (scraped) or estimated sizes
     formats = []
     for q in QUALITY_PRESETS:
-        est_size = _estimate_filesize(duration, q['mbpm']) if duration else 0
+        h = q['height']
+        if h in real_sizes:
+            # Real size = video track + audio track
+            fsize = real_sizes[h] + best_audio_size
+        elif duration:
+            fsize = _estimate_filesize(duration, q['mbpm'])
+        else:
+            fsize = 0
         formats.append({
             'quality': q['quality'],
-            'height': q['height'],
+            'height': h,
             'ext': 'mp4',
-            'filesize': est_size,
+            'filesize': fsize,
             'format_id': q['id'],
             'has_audio': True,
         })
@@ -215,7 +274,7 @@ def get_youtube_info_fallback(video_id, url):
         'quality': 'Audio Only (MP3)',
         'height': 0,
         'ext': 'mp3',
-        'filesize': _estimate_filesize(duration, 0.25) if duration else 0,
+        'filesize': best_audio_size or (_estimate_filesize(duration, 0.25) if duration else 0),
         'format_id': 'audio',
         'has_audio': True,
     })
