@@ -322,24 +322,19 @@ def debug_info():
     except Exception as e:
         results['po_token_error'] = str(e)
 
-    # Test WEB client with several videos
+    # Test multiple clients with a non-Rick-Astley video
     from pytubefix import YouTube
-    test_videos = {
-        'rickroll': 'dQw4w9WgXcQ',
-        'despacito': 'kJQP7kiw5Fk',
-        'apple_tv': '3FZ2f5S9GGs',
-        'mrBeast': 'TQHEJj68Jew',
-        'lofi_girl': 'jfKfPfyJRdk',
-    }
-    for vid_name, vid_id in test_videos.items():
-        test_url = f'https://www.youtube.com/watch?v={vid_id}'
+    test_url = 'https://www.youtube.com/watch?v=kJQP7kiw5Fk'  # Despacito
+    clients_to_test = ['WEB', 'WEB_EMBED', 'WEB_CREATOR', 'WEB_SAFARI',
+                       'TV_EMBED', 'MEDIA_CONNECT', 'IOS', 'ANDROID', 'ANDROID_VR']
+    for client in clients_to_test:
         try:
-            yt = YouTube(test_url, client='WEB')
+            yt = YouTube(test_url, client=client)
             title = yt.title
             n_streams = len(yt.streams)
-            results[f'vid_{vid_name}'] = f'OK: {n_streams}s — {title[:30]}'
+            results[f'c_{client}'] = f'OK: {n_streams}s'
         except Exception as e:
-            results[f'vid_{vid_name}'] = f'FAIL: {str(e)[:80]}'
+            results[f'c_{client}'] = f'FAIL: {str(e)[:60]}'
 
     return jsonify(results)
 
