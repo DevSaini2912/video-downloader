@@ -99,13 +99,13 @@ def _http_get_json(url, timeout=12):
 
 
 def get_youtube_metadata(video_id):
-    """Fetch YouTube metadata from Invidious, falling back to oEmbed."""
-    # --- Invidious (rich metadata) ---
+    """Fetch YouTube metadata + format sizes from Invidious, falling back to oEmbed."""
+    # --- Invidious (rich metadata + adaptive formats for file sizes) ---
     for instance in INVIDIOUS_INSTANCES:
         try:
             data = _http_get_json(
                 f'{instance}/api/v1/videos/{video_id}'
-                '?fields=title,author,lengthSeconds,videoThumbnails,viewCount,likeCount'
+                '?fields=title,author,lengthSeconds,videoThumbnails,viewCount,likeCount,subCountText,adaptiveFormats'
             )
             thumbs = data.get('videoThumbnails', [])
             thumb = ''
@@ -117,6 +117,27 @@ def get_youtube_metadata(video_id):
                 thumb = thumbs[0].get('url', '')
             if thumb and thumb.startswith('/'):
                 thumb = f'{instance}{thumb}'
+
+            # Build file size map from adaptive formats: height → best size
+            size_map = {}  # height → filesize in bytes
+            audio_size = 0
+            for af in data.get('adaptiveFormats', []):
+                af_type = af.get('type', '')
+                af_size = af.get('clen') or af.get('contentLength') or 0
+                try:
+                    af_size = int(af_size)
+                except (ValueError, TypeError):
+                    af_size = 0
+                # Video track
+                h = af.get('resolution', '').replace('p', '')
+                if h and h.isdigit() and 'video' in af_type:
+                    h = int(h)
+                    if h not in size_map or af_size > size_map[h]:
+                        size_map[h] = af_size
+                # Audio track (biggest = best quality)
+                if 'audio' in af_type and af_size > audio_size:
+                    audio_size = af_size
+
             return {
                 'title': data.get('title', 'Unknown'),
                 'channel': data.get('author', 'Unknown'),
@@ -124,6 +145,8 @@ def get_youtube_metadata(video_id):
                 'thumbnail': thumb,
                 'view_count': data.get('viewCount', 0) or 0,
                 'like_count': data.get('likeCount', 0) or 0,
+                '_size_map': size_map,
+                '_audio_size': audio_size,
             }
         except Exception:
             continue
@@ -140,6 +163,8 @@ def get_youtube_metadata(video_id):
             'thumbnail': f'https://i.ytimg.com/vi/{video_id}/hqdefault.jpg',
             'view_count': 0,
             'like_count': 0,
+            '_size_map': {},
+            '_audio_size': 0,
         }
     except Exception:
         pass
@@ -219,22 +244,29 @@ def get_video_info():
             if not meta:
                 return jsonify({'error': 'Could not fetch video info — please try again'}), 500
 
-            formats = [
-                {
+            size_map = meta.pop('_size_map', {})
+            audio_size = meta.pop('_audio_size', 0)
+
+            # Build formats with real file sizes (video + best audio)
+            formats = []
+            for q in YT_QUALITY_PRESETS:
+                v_size = size_map.get(q['height'], 0)
+                # Estimated total = video track + audio track
+                total = (v_size + audio_size) if v_size else 0
+                formats.append({
                     'quality': q['quality'],
                     'height': q['height'],
                     'ext': 'mp4',
-                    'filesize': 0,
+                    'filesize': total,
                     'format_id': q['id'],
                     'has_audio': True,
-                }
-                for q in YT_QUALITY_PRESETS
-            ]
+                })
+
             formats.append({
                 'quality': 'Audio Only (MP3)',
                 'height': 0,
                 'ext': 'mp3',
-                'filesize': 0,
+                'filesize': audio_size,
                 'format_id': 'audio',
                 'has_audio': True,
             })
