@@ -73,7 +73,7 @@ def get_youtube_info(url):
     """Get YouTube video info + available streams via pytubefix."""
     from pytubefix import YouTube
 
-    yt = YouTube(url)
+    yt = YouTube(url, client='WEB')
     title = yt.title
     channel = yt.author
     duration = yt.length  # seconds
@@ -165,7 +165,7 @@ def stream_youtube_download(url, itag, stream_type):
     """Get a pytubefix stream and proxy its CDN URL to the user."""
     from pytubefix import YouTube
 
-    yt = YouTube(url)
+    yt = YouTube(url, client='WEB')
     stream = yt.streams.get_by_itag(int(itag))
     if not stream:
         raise Exception('Stream not found for the selected quality')
@@ -307,7 +307,7 @@ def _download_youtube(url, format_id):
 
     stream_type, itag_str = parts[0], parts[1]
 
-    yt = YouTube(url)
+    yt = YouTube(url, client='WEB')
     stream = yt.streams.get_by_itag(int(itag_str))
     if not stream:
         return jsonify({'error': 'Stream not available'}), 404
