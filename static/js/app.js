@@ -136,7 +136,7 @@ function renderVideoCard(data) {
     videoTitle.textContent = data.title;
     channel.textContent = data.channel;
 
-    // Show views or likes (Instagram often has 0 views but has likes)
+    // Show views or likes
     const viewsContainer = document.getElementById('views').parentElement;
     const viewCount = data.view_count || 0;
     const likeCount = data.like_count || 0;
@@ -184,7 +184,7 @@ function renderVideoCard(data) {
         div.innerHTML = `
             ${badgeHTML}
             <div class="quality-label">${fmt.quality}</div>
-            ${sizeText ? `<div class="quality-size">~${sizeText}</div>` : '<div class="quality-size">—</div>'}
+            ${sizeText ? `<div class="quality-size">~${sizeText}</div>` : '<div class="quality-size">\u2014</div>'}
         `;
 
         div.addEventListener('click', () => selectQuality(div, fmt));
@@ -211,22 +211,36 @@ function selectQuality(element, fmt) {
     downloadBtnText.textContent = `Download ${fmt.quality}`;
 }
 
-// ===== Download Video =====
+// ===== Download Video (direct streaming, no SSE progress) =====
 async function downloadVideo() {
     if (!videoData || !selectedQuality) return;
 
     downloadBtn.disabled = true;
-    downloadBtnText.textContent = 'Starting...';
+    downloadBtnText.textContent = 'Preparing...';
     progressSection.style.display = 'block';
     progressBar.style.width = '0%';
     progressBar.style.background = '';
-    progressPhase.textContent = 'Starting download...';
-    progressPercent.textContent = '0%';
-    progressDetails.textContent = '';
+    progressPhase.textContent = 'Starting download on server...';
+    progressPercent.textContent = '';
+    progressDetails.textContent = 'This may take a minute — please wait';
+
+    // Animate progress bar slowly while waiting
+    let fakeProgress = 0;
+    const progressInterval = setInterval(() => {
+        fakeProgress = Math.min(fakeProgress + 0.5, 85);
+        progressBar.style.width = fakeProgress + '%';
+        if (fakeProgress < 30) {
+            progressPhase.textContent = 'Downloading video on server...';
+        } else if (fakeProgress < 60) {
+            progressPhase.textContent = 'Processing video...';
+        } else {
+            progressPhase.textContent = 'Almost ready...';
+        }
+        downloadBtnText.textContent = `${Math.round(fakeProgress)}% Processing...`;
+    }, 500);
 
     try {
-        // Step 1: Start the download task
-        const startRes = await fetch('/api/start_download', {
+        const response = await fetch('/api/download', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -237,33 +251,24 @@ async function downloadVideo() {
             }),
         });
 
-        const startData = await startRes.json();
-        if (!startRes.ok) {
-            throw new Error(startData.error || 'Failed to start download');
+        clearInterval(progressInterval);
+
+        if (!response.ok) {
+            let errMsg = 'Download failed';
+            try {
+                const errData = await response.json();
+                errMsg = errData.error || errMsg;
+            } catch (_) {}
+            throw new Error(errMsg);
         }
 
-        const taskId = startData.task_id;
-
-        // Step 2: Listen to SSE progress stream
-        const done = await listenProgress(taskId);
-
-        if (done.status === 'error') {
-            throw new Error(done.error || 'Download failed');
-        }
-
-        // Step 3: Download the file from server
-        progressBar.style.width = '100%';
+        // Get the file as blob
+        progressBar.style.width = '90%';
         progressPhase.textContent = 'Saving file...';
-        progressPercent.textContent = '100%';
-        progressDetails.textContent = '';
+        downloadBtnText.textContent = 'Saving...';
 
-        const fileRes = await fetch(`/api/file/${taskId}`);
-        if (!fileRes.ok) {
-            throw new Error('Failed to retrieve file');
-        }
-
-        const blob = await fileRes.blob();
-        const contentDisposition = fileRes.headers.get('Content-Disposition');
+        const blob = await response.blob();
+        const contentDisposition = response.headers.get('Content-Disposition');
         let filename = 'video.mp4';
 
         if (contentDisposition) {
@@ -281,7 +286,7 @@ async function downloadVideo() {
         document.body.removeChild(a);
         URL.revokeObjectURL(downloadUrl);
 
-        // Success!
+        // Success state
         progressBar.style.width = '100%';
         progressBar.style.background = 'linear-gradient(90deg, #10b981, #059669)';
         progressPhase.textContent = 'Download complete!';
@@ -297,68 +302,14 @@ async function downloadVideo() {
         downloadAction = resetForNewDownload;
 
     } catch (err) {
+        clearInterval(progressInterval);
         progressSection.style.display = 'none';
-        showError(err.message || 'Download failed \u2014 please try again');
+        showError(err.message || 'Download failed — please try again');
         downloadBtn.disabled = false;
         downloadBtnText.textContent = `Download ${selectedQuality}`;
         downloadAction = downloadVideo;
         console.error(err);
     }
-}
-
-// ===== SSE Progress Listener =====
-function listenProgress(taskId) {
-    return new Promise((resolve, reject) => {
-        const evtSource = new EventSource(`/api/progress/${taskId}`);
-
-        evtSource.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-
-                // Update progress bar
-                const pct = data.percent || 0;
-                progressBar.style.width = pct + '%';
-
-                // Update phase label
-                progressPhase.textContent = data.phase || 'Processing...';
-
-                // Update percentage
-                progressPercent.textContent = Math.round(pct) + '%';
-
-                // Update details (speed + ETA)
-                let details = '';
-                if (data.speed) details += data.speed;
-                if (data.eta) details += (details ? '   •   ' : '') + 'ETA ' + data.eta;
-                progressDetails.textContent = details;
-
-                // Update button with percentage
-                if (pct > 0 && pct < 100) {
-                    downloadBtnText.textContent = `${Math.round(pct)}% Downloading...`;
-                }
-
-                if (data.status === 'done') {
-                    evtSource.close();
-                    resolve(data);
-                } else if (data.status === 'error') {
-                    evtSource.close();
-                    resolve(data);
-                }
-            } catch (e) {
-                console.error('SSE parse error:', e);
-            }
-        };
-
-        evtSource.onerror = () => {
-            evtSource.close();
-            reject(new Error('Connection to server lost'));
-        };
-
-        // Timeout after 10 minutes
-        setTimeout(() => {
-            evtSource.close();
-            reject(new Error('Download timed out'));
-        }, 10 * 60 * 1000);
-    });
 }
 
 // ===== Reset for new download =====
