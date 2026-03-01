@@ -1,22 +1,19 @@
 """
 Video Downloader — Flask backend
-YouTube: yt-dlp (local) with oEmbed + RYD API fallback for metadata
+YouTube: pytubefix (extracts direct CDN URLs, works from datacenter IPs)
 Instagram: yt-dlp
 """
-from flask import Flask, request, jsonify, send_file, render_template, Response
-import yt_dlp
+from flask import Flask, request, jsonify, render_template, Response
 import os
-import uuid
 import re
 import json
-import math
 import urllib.parse
 import urllib.request
 import urllib.error
 import shutil
 import tempfile
 
-# ── ffmpeg ──────────────────────────────────────────────────────────
+# ── ffmpeg (needed for Instagram + YouTube audio conversion) ────────
 FFMPEG_BIN = shutil.which('ffmpeg')
 FFPROBE_BIN = shutil.which('ffprobe')
 
@@ -48,23 +45,6 @@ if os.path.exists(_IG_COOKIE_SRC) and os.path.getsize(_IG_COOKIE_SRC) > 44:
 else:
     IG_COOKIE_OPTS = {}
 
-# ── yt-dlp options for YouTube ──────────────────────────────────────
-YT_DLP_OPTS = {
-    'extractor_args': {
-        'youtube': {'player_client': ['tv_embedded', 'mediaconnect', 'android']},
-    },
-}
-
-# ── Quality presets (with estimated bitrates in MB/min for size estimation) ──
-QUALITY_PRESETS = [
-    {'id': '2160', 'quality': '4K',    'height': 2160, 'mbpm': 25.0},
-    {'id': '1440', 'quality': '1440p', 'height': 1440, 'mbpm': 12.0},
-    {'id': '1080', 'quality': '1080p', 'height': 1080, 'mbpm': 5.5},
-    {'id': '720',  'quality': '720p',  'height': 720,  'mbpm': 2.8},
-    {'id': '480',  'quality': '480p',  'height': 480,  'mbpm': 1.2},
-    {'id': '360',  'quality': '360p',  'height': 360,  'mbpm': 0.6},
-]
-
 
 # =====================================================================
 #  Helpers
@@ -77,18 +57,6 @@ def detect_platform(url):
     return None
 
 
-def extract_video_id(url):
-    for pat in [
-        r'(?:v=|/v/|youtu\.be/)([a-zA-Z0-9_-]{11})',
-        r'(?:embed/)([a-zA-Z0-9_-]{11})',
-        r'(?:shorts/)([a-zA-Z0-9_-]{11})',
-    ]:
-        m = re.search(pat, url)
-        if m:
-            return m.group(1)
-    return None
-
-
 def _http_get_json(url, timeout=10):
     req = urllib.request.Request(url, headers={
         'Accept': 'application/json',
@@ -98,199 +66,123 @@ def _http_get_json(url, timeout=10):
         return json.loads(r.read().decode())
 
 
-def _estimate_filesize(duration_sec, mbpm):
-    """Estimate file size in bytes from duration and MB/min rate."""
-    if not duration_sec:
-        return 0
-    minutes = duration_sec / 60.0
-    return int(mbpm * minutes * 1024 * 1024)
+# =====================================================================
+#  YouTube — via pytubefix (works from datacenter IPs)
+# =====================================================================
+def get_youtube_info(url):
+    """Get YouTube video info + available streams via pytubefix."""
+    from pytubefix import YouTube
 
+    yt = YouTube(url)
+    title = yt.title
+    channel = yt.author
+    duration = yt.length  # seconds
+    views = yt.views
+    thumbnail = yt.thumbnail_url
 
-# ── YouTube metadata: try yt-dlp first, fall back to oEmbed + RYD ──
-def get_youtube_info_ytdlp(url):
-    """Use yt-dlp to get full metadata + real format sizes. Works locally."""
-    opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'ffmpeg_location': FFMPEG_DIR,
-        **YT_DLP_OPTS,
-    }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-
-    # Build format list with real sizes
-    formats = []
-    seen = set()
-    for f in info.get('formats', []):
-        h = f.get('height')
-        vcodec = f.get('vcodec', 'none')
-        acodec = f.get('acodec', 'none')
-        if h and vcodec != 'none' and h >= 144:
-            key = f'{h}p'
-            if key not in seen:
-                seen.add(key)
-                formats.append({
-                    'quality': key,
-                    'height': h,
-                    'ext': 'mp4',
-                    'filesize': f.get('filesize') or f.get('filesize_approx') or 0,
-                    'format_id': f.get('format_id', key),
-                    'has_audio': acodec != 'none',
-                })
-    formats.sort(key=lambda x: x['height'], reverse=True)
-
-    formats.append({
-        'quality': 'Audio Only (MP3)',
-        'height': 0,
-        'ext': 'mp3',
-        'filesize': 0,
-        'format_id': 'audio',
-        'has_audio': True,
-    })
-
-    return {
-        'title': info.get('title', 'Unknown'),
-        'thumbnail': info.get('thumbnail', ''),
-        'duration': info.get('duration', 0),
-        'channel': info.get('channel', info.get('uploader', 'Unknown')),
-        'view_count': info.get('view_count', 0) or 0,
-        'like_count': info.get('like_count', 0) or 0,
-        'formats': formats,
-        'url': url,
-        'platform': 'youtube',
-        '_source': 'ytdlp',
-    }
-
-
-def _scrape_youtube_page(video_id):
-    """Fetch YouTube watch page HTML and extract ytInitialPlayerResponse.
-    Works from datacenter IPs — YouTube serves the page, it only blocks streams."""
-    watch_url = f'https://www.youtube.com/watch?v={video_id}'
-    req = urllib.request.Request(watch_url, headers={
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                      '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept': 'text/html,application/xhtml+xml',
-    })
-    with urllib.request.urlopen(req, timeout=15) as r:
-        html = r.read().decode('utf-8', errors='replace')
-
-    # Extract ytInitialPlayerResponse JSON
-    m = re.search(r'var\s+ytInitialPlayerResponse\s*=\s*(\{.+?\});', html)
-    if not m:
-        m = re.search(r'ytInitialPlayerResponse\s*=\s*(\{.+?\});', html)
-    if not m:
-        return None
-    return json.loads(m.group(1))
-
-
-def get_youtube_info_fallback(video_id, url):
-    """Scrape YouTube watch page for full metadata + real file sizes.
-    Falls back to oEmbed + RYD if scraping fails."""
-    title = 'Unknown'
-    channel = 'Unknown'
-    thumbnail = f'https://i.ytimg.com/vi/{video_id}/hqdefault.jpg'
-    duration = 0
-    view_count = 0
+    # Get like count from RYD API
     like_count = 0
-    real_sizes = {}   # height → filesize in bytes (video track only)
-    best_audio_size = 0
-
-    # ── Strategy A: Scrape YouTube watch page (best data) ──
     try:
-        player = _scrape_youtube_page(video_id)
-        if player:
-            vd = player.get('videoDetails', {})
-            title = vd.get('title', title)
-            channel = vd.get('author', channel)
-            duration = int(vd.get('lengthSeconds', 0) or 0)
-            view_count = int(vd.get('viewCount', 0) or 0)
-
-            thumbs = vd.get('thumbnail', {}).get('thumbnails', [])
-            if thumbs:
-                thumbnail = thumbs[-1].get('url', thumbnail)
-
-            # Extract real file sizes from adaptiveFormats
-            for af in player.get('streamingData', {}).get('adaptiveFormats', []):
-                cl = af.get('contentLength')
-                if not cl:
-                    continue
-                cl = int(cl)
-                mime = af.get('mimeType', '')
-                ql = af.get('qualityLabel', '')
-
-                if 'video' in mime:
-                    h = af.get('height', 0)
-                    if h and (h not in real_sizes or cl > real_sizes[h]):
-                        real_sizes[h] = cl
-                elif 'audio' in mime:
-                    if cl > best_audio_size:
-                        best_audio_size = cl
-    except Exception:
-        pass
-
-    # ── Strategy B: oEmbed for title/channel (if scraping failed) ──
-    if title == 'Unknown':
-        try:
-            oembed = _http_get_json(
-                f'https://www.youtube.com/oembed?url=https://youtube.com/watch?v={video_id}&format=json'
-            )
-            title = oembed.get('title', title)
-            channel = oembed.get('author_name', channel)
-        except Exception:
-            pass
-
-    # ── Strategy C: RYD API for views + likes (supplement or fallback) ──
-    try:
+        vid_id = yt.video_id
         ryd = _http_get_json(
-            f'https://returnyoutubedislikeapi.com/votes?videoId={video_id}'
+            f'https://returnyoutubedislikeapi.com/votes?videoId={vid_id}'
         )
-        if not view_count:
-            view_count = ryd.get('viewCount', 0) or 0
         like_count = ryd.get('likes', 0) or 0
     except Exception:
         pass
 
-    # Build format list with real sizes (scraped) or estimated sizes
+    # Build format list from available streams
     formats = []
-    for q in QUALITY_PRESETS:
-        h = q['height']
-        if h in real_sizes:
-            # Real size = video track + audio track
-            fsize = real_sizes[h] + best_audio_size
-        elif duration:
-            fsize = _estimate_filesize(duration, q['mbpm'])
-        else:
-            fsize = 0
+    seen = set()
+
+    # Progressive (muxed) streams — video + audio in one file
+    for s in yt.streams.filter(progressive=True).order_by('resolution').desc():
+        h = s.resolution  # e.g., '720p'
+        if h and h not in seen:
+            seen.add(h)
+            height = int(h.replace('p', ''))
+            formats.append({
+                'quality': h,
+                'height': height,
+                'ext': 'mp4',
+                'filesize': s.filesize or 0,
+                'format_id': f'prog_{s.itag}',
+                'itag': s.itag,
+                'has_audio': True,
+                'stream_type': 'progressive',
+            })
+
+    # Adaptive (video-only) mp4 streams — higher quality
+    for s in yt.streams.filter(adaptive=True, mime_type='video/mp4').order_by('resolution').desc():
+        h = s.resolution
+        if h and h not in seen:
+            seen.add(h)
+            height = int(h.replace('p', ''))
+            # Get best audio stream size for total estimate
+            best_audio = yt.streams.filter(only_audio=True, mime_type='audio/mp4').order_by('abr').desc().first()
+            audio_size = best_audio.filesize if best_audio else 0
+            formats.append({
+                'quality': h,
+                'height': height,
+                'ext': 'mp4',
+                'filesize': (s.filesize or 0) + audio_size,
+                'format_id': f'adapt_{s.itag}',
+                'itag': s.itag,
+                'has_audio': False,
+                'stream_type': 'adaptive',
+            })
+
+    formats.sort(key=lambda x: x['height'], reverse=True)
+
+    # Audio only
+    best_audio = yt.streams.filter(only_audio=True).order_by('abr').desc().first()
+    if best_audio:
         formats.append({
-            'quality': q['quality'],
-            'height': h,
-            'ext': 'mp4',
-            'filesize': fsize,
-            'format_id': q['id'],
+            'quality': 'Audio Only (MP3)',
+            'height': 0,
+            'ext': 'mp3',
+            'filesize': best_audio.filesize or 0,
+            'format_id': f'audio_{best_audio.itag}',
+            'itag': best_audio.itag,
             'has_audio': True,
+            'stream_type': 'audio',
         })
-    formats.append({
-        'quality': 'Audio Only (MP3)',
-        'height': 0,
-        'ext': 'mp3',
-        'filesize': best_audio_size or (_estimate_filesize(duration, 0.25) if duration else 0),
-        'format_id': 'audio',
-        'has_audio': True,
-    })
 
     return {
         'title': title,
         'thumbnail': thumbnail,
         'duration': duration,
         'channel': channel,
-        'view_count': view_count,
+        'view_count': views or 0,
         'like_count': like_count,
         'formats': formats,
         'url': url,
         'platform': 'youtube',
-        '_source': 'fallback',
     }
+
+
+def stream_youtube_download(url, itag, stream_type):
+    """Get a pytubefix stream and proxy its CDN URL to the user."""
+    from pytubefix import YouTube
+
+    yt = YouTube(url)
+    stream = yt.streams.get_by_itag(int(itag))
+    if not stream:
+        raise Exception('Stream not found for the selected quality')
+
+    title = re.sub(r'[^\w\s\-]', '', yt.title)[:80].strip()
+    cdn_url = stream.url
+    filesize = stream.filesize
+
+    # Determine extension
+    if stream_type == 'audio':
+        ext = 'mp3'  # Will be converted
+        fname = f'{title}.mp3'
+    else:
+        ext = 'mp4'
+        fname = f'{title}.mp4'
+
+    return cdn_url, fname, filesize, stream.mime_type
 
 
 # =====================================================================
@@ -314,25 +206,11 @@ def get_video_info():
 
     try:
         if platform == 'youtube':
-            vid = extract_video_id(url)
-            if not vid:
-                return jsonify({'error': 'Could not parse YouTube video ID from URL'}), 400
-
-            # Strategy 1: yt-dlp (full data — works locally / clean IPs)
-            try:
-                result = get_youtube_info_ytdlp(url)
-                return jsonify(result)
-            except Exception:
-                pass
-
-            # Strategy 2: oEmbed + RYD fallback (works everywhere)
-            result = get_youtube_info_fallback(vid, url)
-            if result['title'] == 'Unknown':
-                return jsonify({'error': 'Could not fetch video info — please check the URL'}), 500
+            result = get_youtube_info(url)
             return jsonify(result)
-
         else:
             # Instagram — yt-dlp
+            import yt_dlp
             ydl_opts = {
                 'quiet': True,
                 'no_warnings': True,
@@ -343,13 +221,13 @@ def get_video_info():
                 info = ydl.extract_info(url, download=False)
 
             formats = []
-            seen = set()
+            seen_q = set()
             for f in info.get('formats', []):
                 h = f.get('height')
                 if h and f.get('vcodec', 'none') != 'none' and h >= 144:
                     key = f'{h}p'
-                    if key not in seen:
-                        seen.add(key)
+                    if key not in seen_q:
+                        seen_q.add(key)
                         formats.append({
                             'quality': key,
                             'height': h,
@@ -398,7 +276,7 @@ def get_video_info():
 
 @app.route('/api/download', methods=['POST'])
 def download_video():
-    """Download via yt-dlp and stream file back."""
+    """Stream YouTube video from CDN through server, or download Instagram via yt-dlp."""
     data = request.get_json()
     url = data.get('url', '').strip()
     quality = data.get('quality', '720p')
@@ -408,110 +286,139 @@ def download_video():
     if not url:
         return jsonify({'error': 'Please provide a URL'}), 400
 
+    try:
+        if platform == 'youtube':
+            return _download_youtube(url, format_id)
+        else:
+            return _download_instagram(url, quality, format_id)
+    except Exception as e:
+        return jsonify({'error': f'Download failed: {str(e)}'}), 500
+
+
+def _download_youtube(url, format_id):
+    """Proxy YouTube CDN stream to user's browser."""
+    from pytubefix import YouTube
+
+    # Parse format_id to get itag and stream type
+    # format_id is like 'prog_22', 'adapt_137', 'audio_140'
+    parts = format_id.split('_', 1)
+    if len(parts) != 2:
+        return jsonify({'error': 'Invalid format selection'}), 400
+
+    stream_type, itag_str = parts[0], parts[1]
+
+    yt = YouTube(url)
+    stream = yt.streams.get_by_itag(int(itag_str))
+    if not stream:
+        return jsonify({'error': 'Stream not available'}), 404
+
+    title = re.sub(r'[^\w\s\-]', '', yt.title)[:80].strip()
+    cdn_url = stream.url
+    filesize = stream.filesize
+    mime = stream.mime_type or 'video/mp4'
+
+    if stream_type == 'audio':
+        ext = 'mp4'  # Raw audio from YouTube is m4a/webm, send as-is
+        fname = f'{title}.m4a'
+        mime = stream.mime_type or 'audio/mp4'
+    else:
+        ext = 'mp4'
+        fname = f'{title}.mp4'
+
+    # Proxy the CDN URL: fetch from YouTube CDN and stream to user
+    def generate():
+        req = urllib.request.Request(cdn_url, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        })
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            while True:
+                chunk = resp.read(65536)  # 64KB chunks
+                if not chunk:
+                    break
+                yield chunk
+
+    headers = {
+        'Content-Type': mime,
+        'Content-Disposition': f'attachment; filename="{fname}"',
+        'Cache-Control': 'no-cache',
+    }
+    if filesize:
+        headers['Content-Length'] = str(filesize)
+
+    return Response(generate(), headers=headers)
+
+
+def _download_instagram(url, quality, format_id):
+    """Download Instagram video via yt-dlp and stream back."""
+    import yt_dlp
+    import uuid
+
     file_id = f'dl_{uuid.uuid4().hex[:10]}'
     output_template = os.path.join(DOWNLOAD_DIR, f'{file_id}.%(ext)s')
 
-    try:
-        if format_id == 'audio':
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': output_template,
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
-                'ffmpeg_location': FFMPEG_DIR,
-                'quiet': True,
-                'no_warnings': True,
-                **(IG_COOKIE_OPTS if platform == 'instagram' else {}),
-                **(YT_DLP_OPTS if platform == 'youtube' else {}),
-            }
-        elif platform == 'instagram':
-            ydl_opts = {
-                'format': 'bestvideo+bestaudio/best',
-                'outtmpl': output_template,
-                'merge_output_format': 'mp4',
-                'ffmpeg_location': FFMPEG_DIR,
-                'quiet': True,
-                'no_warnings': True,
-                **IG_COOKIE_OPTS,
-            }
-        else:
-            # YouTube video — map quality or use format_id
-            height = quality.replace('p', '').replace('K', '').replace('4', '2160')
-            if height == '4':
-                height = '2160'
-            elif not height.isdigit():
-                height = '720'
-            fmt = (
-                f'bestvideo[height<={height}]+bestaudio[ext=m4a]'
-                f'/bestvideo[height<={height}]+bestaudio'
-                f'/best[height<={height}]/best'
-            )
-            ydl_opts = {
-                'format': fmt,
-                'outtmpl': output_template,
-                'merge_output_format': 'mp4',
-                'ffmpeg_location': FFMPEG_DIR,
-                'quiet': True,
-                'no_warnings': True,
-                **YT_DLP_OPTS,
-            }
+    if format_id == 'audio':
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': output_template,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'ffmpeg_location': FFMPEG_DIR,
+            'quiet': True,
+            'no_warnings': True,
+            **IG_COOKIE_OPTS,
+        }
+    else:
+        ydl_opts = {
+            'format': 'bestvideo+bestaudio/best',
+            'outtmpl': output_template,
+            'merge_output_format': 'mp4',
+            'ffmpeg_location': FFMPEG_DIR,
+            'quiet': True,
+            'no_warnings': True,
+            **IG_COOKIE_OPTS,
+        }
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            title = info.get('title', 'video')
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        title = info.get('title', 'video')
 
-        # Find the final output file
-        candidates = []
-        for f in os.listdir(DOWNLOAD_DIR):
-            if f.startswith(file_id):
-                fp = os.path.join(DOWNLOAD_DIR, f)
-                candidates.append((f, os.path.getsize(fp), fp))
+    # Find the output file
+    candidates = []
+    for f in os.listdir(DOWNLOAD_DIR):
+        if f.startswith(file_id):
+            fp = os.path.join(DOWNLOAD_DIR, f)
+            candidates.append((f, os.path.getsize(fp), fp))
 
-        if not candidates:
-            return jsonify({'error': 'Download failed — file not found'}), 500
+    if not candidates:
+        return jsonify({'error': 'Download failed — file not found'}), 500
 
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        downloaded = candidates[0][2]
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    downloaded = candidates[0][2]
 
-        for _, _, fp in candidates:
-            if fp != downloaded:
-                try:
-                    os.remove(fp)
-                except Exception:
-                    pass
-
-        safe_title = re.sub(r'[^\w\s\-]', '', title)[:80].strip()
-        ext = os.path.splitext(downloaded)[1]
-        response = send_file(downloaded, as_attachment=True, download_name=f'{safe_title}{ext}')
-
-        @response.call_on_close
-        def cleanup():
+    for _, _, fp in candidates:
+        if fp != downloaded:
             try:
-                os.remove(downloaded)
+                os.remove(fp)
             except Exception:
                 pass
 
-        return response
+    safe_title = re.sub(r'[^\w\s\-]', '', title)[:80].strip()
+    ext = os.path.splitext(downloaded)[1]
 
-    except Exception as e:
-        # Clean up partial files
-        for f in os.listdir(DOWNLOAD_DIR):
-            if f.startswith(file_id):
-                try:
-                    os.remove(os.path.join(DOWNLOAD_DIR, f))
-                except Exception:
-                    pass
+    from flask import send_file
+    response = send_file(downloaded, as_attachment=True, download_name=f'{safe_title}{ext}')
 
-        err_msg = str(e)
-        if 'Sign in to confirm' in err_msg or 'bot' in err_msg.lower():
-            return jsonify({
-                'error': 'YouTube is blocking this server\'s IP. '
-                         'Try running the app locally with "python app.py" for full functionality.'
-            }), 503
-        return jsonify({'error': f'Download failed: {err_msg}'}), 500
+    @response.call_on_close
+    def cleanup():
+        try:
+            os.remove(downloaded)
+        except Exception:
+            pass
+
+    return response
 
 
 @app.route('/api/thumb')
