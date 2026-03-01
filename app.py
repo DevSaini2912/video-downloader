@@ -1,7 +1,8 @@
 """
 Video Downloader — Flask backend
-YouTube: pytubefix (extracts direct CDN URLs, works from datacenter IPs)
+YouTube: pytubefix (multi-client fallback)
 Instagram: yt-dlp
+Run locally + expose via Cloudflare Tunnel for public access.
 """
 from flask import Flask, request, jsonify, render_template, Response
 import os
@@ -70,9 +71,9 @@ def _http_get_json(url, timeout=10):
 #  YouTube — via pytubefix (works from datacenter IPs)
 # =====================================================================
 
-# Clients to try — IOS gives direct URLs for all formats;
-# WEB uses PO token (auto-generated via Node.js) and works from datacenter IPs
-_YT_CLIENTS = ['IOS', 'WEB', 'ANDROID_VR']
+# Clients to try — WEB auto-generates PO token via Node.js;
+# IOS gives direct URLs for all formats; ANDROID_VR as last fallback
+_YT_CLIENTS = ['WEB', 'IOS', 'ANDROID_VR']
 
 
 def _make_yt(url):
@@ -291,70 +292,6 @@ def get_video_info():
 
     except Exception as e:
         return jsonify({'error': f'Failed to fetch video info: {str(e)}'}), 500
-
-
-@app.route('/api/debug')
-def debug_info():
-    """Diagnostic endpoint — check Node.js, pytubefix, and client status."""
-    import subprocess, traceback
-    results = {}
-
-    # Check Node.js from nodejs-wheel-binaries
-    try:
-        from pytubefix.botGuard.bot_guard import NODE_PATH, VM_PATH
-        results['node_path'] = NODE_PATH
-        results['node_exists'] = os.path.exists(NODE_PATH)
-        results['vm_path'] = VM_PATH
-        results['vm_exists'] = os.path.exists(VM_PATH)
-        try:
-            out = subprocess.check_output([NODE_PATH, '--version'], stderr=subprocess.PIPE, timeout=5)
-            results['node_version'] = out.decode().strip()
-        except Exception as e:
-            results['node_error'] = str(e)
-    except Exception as e:
-        results['node_import_error'] = str(e)
-
-    # Test PO token generation
-    try:
-        from pytubefix.botGuard.bot_guard import generate_po_token
-        pot = generate_po_token('dQw4w9WgXcQ')
-        results['po_token'] = pot[:40] + '...' if pot else None
-    except Exception as e:
-        results['po_token_error'] = str(e)
-
-    # Test: fetch YouTube homepage to get session cookies
-    import http.cookiejar
-    try:
-        cj = http.cookiejar.CookieJar()
-        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
-        # First visit YouTube to get session cookies
-        home_req = urllib.request.Request(
-            'https://www.youtube.com/',
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-                     'Accept-Language': 'en-US,en;q=0.9'}
-        )
-        resp = opener.open(home_req, timeout=10)
-        resp.read()
-        cookies = {c.name: c.value for c in cj}
-        results['session_cookies'] = list(cookies.keys())
-
-        # Now try watch page with session cookies
-        watch_req = urllib.request.Request(
-            'https://www.youtube.com/watch?v=kJQP7kiw5Fk',
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-                     'Accept-Language': 'en-US,en;q=0.9'}
-        )
-        resp2 = opener.open(watch_req, timeout=15)
-        html = resp2.read().decode('utf-8', errors='replace')
-        results['with_cookies_streamingData'] = 'streamingData' in html
-        results['with_cookies_formats'] = '"formats"' in html
-        import re as re2
-        m = re2.search(r'"playabilityStatus":\{"status":"(\w+)"', html)
-        results['with_cookies_playability'] = m.group(1) if m else 'not found'
-    except Exception as e:
-        results['session_cookie_error'] = str(e)[:100]
-
-    return jsonify(results)
 
 
 @app.route('/api/download', methods=['POST'])

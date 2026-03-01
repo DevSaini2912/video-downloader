@@ -4,5 +4,5 @@ downloads/
 *.pyc
 .env
 .vercel
-
+cloudflared.exe
 cookies.txt
