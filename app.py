@@ -322,27 +322,37 @@ def debug_info():
     except Exception as e:
         results['po_token_error'] = str(e)
 
-    # Test raw watch page scraping from Vercel's IP
+    # Test: fetch YouTube homepage to get session cookies
+    import http.cookiejar
     try:
+        cj = http.cookiejar.CookieJar()
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+        # First visit YouTube to get session cookies
+        home_req = urllib.request.Request(
+            'https://www.youtube.com/',
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                     'Accept-Language': 'en-US,en;q=0.9'}
+        )
+        resp = opener.open(home_req, timeout=10)
+        resp.read()
+        cookies = {c.name: c.value for c in cj}
+        results['session_cookies'] = list(cookies.keys())
+
+        # Now try watch page with session cookies
         watch_req = urllib.request.Request(
             'https://www.youtube.com/watch?v=kJQP7kiw5Fk',
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'}
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                     'Accept-Language': 'en-US,en;q=0.9'}
         )
-        with urllib.request.urlopen(watch_req, timeout=15) as resp:
-            html = resp.read().decode('utf-8', errors='replace')
-            results['watch_page_len'] = len(html)
-            results['has_playerResponse'] = 'ytInitialPlayerResponse' in html
-            results['has_streamingData'] = 'streamingData' in html
-            results['has_formats'] = '"formats"' in html
-            results['has_adaptiveFormats'] = '"adaptiveFormats"' in html
-            # Check for bot detection on the page
-            results['has_bot_check'] = 'are not a robot' in html.lower() or 'confirm you' in html.lower()
-            # Extract playability status
-            import re as re2
-            m = re2.search(r'"playabilityStatus":\{"status":"(\w+)"', html)
-            results['playability'] = m.group(1) if m else 'not found'
+        resp2 = opener.open(watch_req, timeout=15)
+        html = resp2.read().decode('utf-8', errors='replace')
+        results['with_cookies_streamingData'] = 'streamingData' in html
+        results['with_cookies_formats'] = '"formats"' in html
+        import re as re2
+        m = re2.search(r'"playabilityStatus":\{"status":"(\w+)"', html)
+        results['with_cookies_playability'] = m.group(1) if m else 'not found'
     except Exception as e:
-        results['watch_page_error'] = str(e)[:100]
+        results['session_cookie_error'] = str(e)[:100]
 
     return jsonify(results)
 
