@@ -34,10 +34,14 @@ app = Flask(__name__, static_folder='static', template_folder='templates')
 DOWNLOAD_DIR = tempfile.gettempdir()
 
 # YouTube anti-bot config
-COOKIE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
-if os.path.exists(COOKIE_FILE):
-    COOKIE_OPTS = {'cookiefile': COOKIE_FILE}
-    print("  Using cookies from cookies.txt")
+# Vercel's /var/task is read-only; if cookies.txt is bundled, copy to /tmp so yt-dlp can update it
+_COOKIE_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
+_COOKIE_TMP = os.path.join(tempfile.gettempdir(), 'cookies.txt')
+if os.path.exists(_COOKIE_SRC) and os.path.getsize(_COOKIE_SRC) > 10:
+    import shutil
+    shutil.copy2(_COOKIE_SRC, _COOKIE_TMP)
+    COOKIE_OPTS = {'cookiefile': _COOKIE_TMP}
+    print("  Using cookies (copied to /tmp)")
 else:
     COOKIE_OPTS = {}
     print("  No cookies.txt — using yt-dlp default extraction")
