@@ -296,7 +296,7 @@ def get_video_info():
 @app.route('/api/debug')
 def debug_info():
     """Diagnostic endpoint — check Node.js, pytubefix, and client status."""
-    import subprocess
+    import subprocess, traceback
     results = {}
 
     # Check Node.js from nodejs-wheel-binaries
@@ -322,17 +322,22 @@ def debug_info():
     except Exception as e:
         results['po_token_error'] = str(e)
 
-    # Test each client
+    # Test each client with TWO videos
     from pytubefix import YouTube
-    test_url = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
-    for client in _YT_CLIENTS:
-        try:
-            yt = YouTube(test_url, client=client)
-            title = yt.title
-            n_streams = len(yt.streams)
-            results[f'client_{client}'] = f'OK: {n_streams} streams'
-        except Exception as e:
-            results[f'client_{client}'] = f'FAIL: {str(e)[:100]}'
+    test_videos = {
+        'rickroll': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+        'problem': 'https://www.youtube.com/watch?v=3FZ2f5S9GGs',
+    }
+    for vid_name, test_url in test_videos.items():
+        for client in _YT_CLIENTS:
+            key = f'{vid_name}_{client}'
+            try:
+                yt = YouTube(test_url, client=client)
+                title = yt.title
+                n_streams = len(yt.streams)
+                results[key] = f'OK: {n_streams} streams — {title[:40]}'
+            except Exception as e:
+                results[key] = f'FAIL: {traceback.format_exc()[-200:]}'
 
     return jsonify(results)
 
