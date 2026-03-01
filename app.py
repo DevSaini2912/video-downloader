@@ -66,6 +66,16 @@ def clean_old_files():
 cleanup_thread = threading.Thread(target=clean_old_files, daemon=True)
 cleanup_thread.start()
 
+# Cookie config for YouTube authentication (avoids bot detection)
+# Uses cookies from your browser — change 'chrome' to 'firefox', 'edge', 'brave' etc.
+COOKIE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
+if os.path.exists(COOKIE_FILE):
+    COOKIE_OPTS = {'cookiefile': COOKIE_FILE}
+    print(f"  🍪 Using cookies from cookies.txt")
+else:
+    COOKIE_OPTS = {'cookiesfrombrowser': ('chrome',)}
+    print(f"  🍪 Using cookies from Chrome browser")
+
 
 @app.route('/')
 def index():
@@ -90,6 +100,7 @@ def get_video_info():
             'quiet': True,
             'no_warnings': True,
             'ffmpeg_location': FFMPEG_DIR,
+            **COOKIE_OPTS,
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -326,6 +337,7 @@ def _do_download(task_id, url, quality, format_id, platform='youtube'):
                 'progress_hooks': [progress_hook],
                 'quiet': True,
                 'no_warnings': True,
+                **COOKIE_OPTS,
             }
         elif platform == 'instagram':
             # Instagram: use bestvideo+bestaudio to ensure audio is included
@@ -339,6 +351,7 @@ def _do_download(task_id, url, quality, format_id, platform='youtube'):
                 'progress_hooks': [progress_hook],
                 'quiet': True,
                 'no_warnings': True,
+                **COOKIE_OPTS,
             }
         else:
             height = quality.replace('p', '')
@@ -357,6 +370,7 @@ def _do_download(task_id, url, quality, format_id, platform='youtube'):
                 'progress_hooks': [progress_hook],
                 'quiet': True,
                 'no_warnings': True,
+                **COOKIE_OPTS,
             }
 
         download_progress[task_id]['phase'] = 'Starting download...'
