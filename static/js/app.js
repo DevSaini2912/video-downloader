@@ -262,29 +262,46 @@ async function downloadVideo() {
             throw new Error(errMsg);
         }
 
-        // Get the file as blob
         progressBar.style.width = '90%';
         progressPhase.textContent = 'Saving file...';
         downloadBtnText.textContent = 'Saving...';
 
-        const blob = await response.blob();
-        const contentDisposition = response.headers.get('Content-Disposition');
-        let filename = 'video.mp4';
+        const contentType = response.headers.get('Content-Type') || '';
 
-        if (contentDisposition) {
-            const match = contentDisposition.match(/filename\*?=(?:UTF-8'')?["']?([^"';\n]+)/i);
-            if (match) filename = decodeURIComponent(match[1]);
+        if (contentType.includes('application/json')) {
+            // YouTube: cobalt returns a download URL — redirect browser to it
+            const data = await response.json();
+            if (data.error) throw new Error(data.error);
+            if (data.download_url) {
+                const a = document.createElement('a');
+                a.href = data.download_url;
+                a.download = data.filename || 'video.mp4';
+                a.target = '_blank';
+                a.rel = 'noopener noreferrer';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            }
+        } else {
+            // Instagram: server streams the file back as a blob
+            const blob = await response.blob();
+            const contentDisposition = response.headers.get('Content-Disposition');
+            let filename = 'video.mp4';
+
+            if (contentDisposition) {
+                const match = contentDisposition.match(/filename\*?=(?:UTF-8'')?["']?([^"';\n]+)/i);
+                if (match) filename = decodeURIComponent(match[1]);
+            }
+
+            const downloadUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = downloadUrl;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(downloadUrl);
         }
-
-        // Trigger browser download
-        const downloadUrl = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = downloadUrl;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(downloadUrl);
 
         // Success state
         progressBar.style.width = '100%';
