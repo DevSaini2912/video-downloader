@@ -1,14 +1,15 @@
 {
     "builds": [
         {
-            "src": "api/yt-proxy.js",
-            "use": "@vercel/edge"
-        },
-        {
             "src": "app.py",
             "use": "@vercel/python"
         }
     ],
+    "functions": {
+        "api/yt-proxy.js": {
+            "runtime": "edge"
+        }
+    },
     "routes": [
         {
             "src": "/api/yt-proxy",
