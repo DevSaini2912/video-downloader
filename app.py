@@ -69,11 +69,30 @@ def _http_get_json(url, timeout=10):
 # =====================================================================
 #  YouTube — via pytubefix (works from datacenter IPs)
 # =====================================================================
+
+# Clients that don't require PO tokens or JS player parsing
+_YT_CLIENTS = ['IOS', 'ANDROID_VR', 'WEB_CREATOR']
+
+
+def _make_yt(url):
+    """Create a pytubefix YouTube object, trying multiple clients."""
+    from pytubefix import YouTube
+    last_err = None
+    for client in _YT_CLIENTS:
+        try:
+            yt = YouTube(url, client=client)
+            # Force metadata fetch to catch errors early
+            _ = yt.title
+            return yt
+        except Exception as e:
+            last_err = e
+            continue
+    raise last_err or Exception('All YouTube clients failed')
+
+
 def get_youtube_info(url):
     """Get YouTube video info + available streams via pytubefix."""
-    from pytubefix import YouTube
-
-    yt = YouTube(url, client='WEB')
+    yt = _make_yt(url)
     title = yt.title
     channel = yt.author
     duration = yt.length  # seconds
@@ -163,9 +182,7 @@ def get_youtube_info(url):
 
 def stream_youtube_download(url, itag, stream_type):
     """Get a pytubefix stream and proxy its CDN URL to the user."""
-    from pytubefix import YouTube
-
-    yt = YouTube(url, client='WEB')
+    yt = _make_yt(url)
     stream = yt.streams.get_by_itag(int(itag))
     if not stream:
         raise Exception('Stream not found for the selected quality')
@@ -297,8 +314,6 @@ def download_video():
 
 def _download_youtube(url, format_id):
     """Proxy YouTube CDN stream to user's browser."""
-    from pytubefix import YouTube
-
     # Parse format_id to get itag and stream type
     # format_id is like 'prog_22', 'adapt_137', 'audio_140'
     parts = format_id.split('_', 1)
@@ -307,7 +322,7 @@ def _download_youtube(url, format_id):
 
     stream_type, itag_str = parts[0], parts[1]
 
-    yt = YouTube(url, client='WEB')
+    yt = _make_yt(url)
     stream = yt.streams.get_by_itag(int(itag_str))
     if not stream:
         return jsonify({'error': 'Stream not available'}), 404
